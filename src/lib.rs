@@ -25,7 +25,7 @@ pub trait Spawn<T: Future<Item = (), Error = ()>> {
     /// This function will return immediately, and schedule the future `f` to
     /// run on `self`. The details of scheduling and execution are left to the
     /// implementations of `Spawn`.
-    fn spawn_detatched(&self, f: T);
+    fn spawn_detached(&self, f: T);
 
     /// Spawns a future to run on this `Spawn`, returning a future representing
     /// the produced value.
@@ -134,7 +134,7 @@ mod with_std {
         };
 
         // Spawn the future
-        s.spawn_detatched(sender);
+        s.spawn_detached(sender);
 
         SpawnHandle {
             inner: rx,
@@ -192,7 +192,7 @@ mod with_std {
     }
 
     impl<T: Future<Item = (), Error = ()> + Send + 'static> Spawn<T> for NewThread {
-        fn spawn_detatched(&self, future: T) {
+        fn spawn_detached(&self, future: T) {
             use std::thread;
 
             thread::spawn(move || {
@@ -211,19 +211,19 @@ mod tokio {
     use self::tokio_core::reactor::{Core, Handle, Remote};
 
     impl<T: Future<Item = (), Error = ()> + 'static> Spawn<T> for Handle {
-        fn spawn_detatched(&self, future: T) {
+        fn spawn_detached(&self, future: T) {
             Handle::spawn(self, future);
         }
     }
 
     impl<T: Future<Item = (), Error = ()> + 'static> Spawn<T> for Core {
-        fn spawn_detatched(&self, future: T) {
-            self.handle().spawn_detatched(future);
+        fn spawn_detached(&self, future: T) {
+            self.handle().spawn_detached(future);
         }
     }
 
     impl<T: Future<Item = (), Error = ()> + Send + 'static> Spawn<T> for Remote {
-        fn spawn_detatched(&self, future: T) {
+        fn spawn_detached(&self, future: T) {
             Remote::spawn(self, move |_| future);
         }
     }
