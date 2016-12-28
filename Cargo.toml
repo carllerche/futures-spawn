@@ -1,0 +1,26 @@
+[package]
+name = "futures-spawn"
+version = "0.1.0"
+authors = ["Carl Lerche <me@carllerche.com>"]
+license = "MIT/Apache-2.0"
+readme = "README.md"
+keywords = ["futures", "future", "tasks"]
+repository = "https://github.com/carllerche/futures-spawn"
+homepage = "https://github.com/carllerche/futures-spawn"
+documentation = "https://docs.rs/futures-spawn"
+description = """
+An abstraction for spawning futures
+"""
+
+[features]
+
+default = ["tokio", "use_std"]
+tokio = ["tokio-core"]
+use_std = ["futures/use_std"]
+
+[dependencies]
+tokio-core = { version = "0.1", optional = true }
+
+[dependencies.futures]
+version = "0.1"
+default-features = false
