@@ -2,6 +2,10 @@
 
 An abstraction for values that spawn futures.
 
+[![Crates.io](https://img.shields.io/crates/v/futures-spawn.svg?maxAge=2592000)](https://crates.io/crates/futures-spawn)
+
+[Documentation](https://docs.rs/futures-spawn)
+
 ## Overview
 
 [futures-rs](http://github.com/alexcrichton/futures-rs) provides a task
