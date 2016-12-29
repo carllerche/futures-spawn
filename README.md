@@ -20,6 +20,32 @@ executor.
 
 Ideally, this crate will be merged into futures-rs proper.
 
+## Usage
+
+First, add this to your `Cargo.toml`:
+
+```toml
+[dependencies]
+futures-spawn = "0.1"
+```
+
+Or, to use without pulling in `tokio-core`, add this to your `Cargo.toml` file:
+
+```toml
+[dependencies.futures-spawn]
+version = "0.1"
+default-features = false
+features = ["use_std"]
+```
+
+Next, add this to your crate:
+
+```rust
+extern crate futures_spawn;
+```
+
+And then, spawn some futures!
+
 ## License
 
 `futures-spawn` is primarily distributed under the terms of both the MIT license
