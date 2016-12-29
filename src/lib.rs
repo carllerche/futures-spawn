@@ -26,60 +26,16 @@ pub trait Spawn<T: Future<Item = (), Error = ()>> {
     /// run on `self`. The details of scheduling and execution are left to the
     /// implementations of `Spawn`.
     fn spawn_detached(&self, f: T);
-
-    /// Spawns a future to run on this `Spawn`, returning a future representing
-    /// the produced value.
-    ///
-    ///
-    /// This function will return immediately, and schedule the future `f` to
-    /// run on `self`. The details of scheduling and execution are left to the
-    /// implementations of `Spawn`. The returned future serves as a proxy to the
-    /// computation that `F` is running.
-    ///
-    /// To simply run an arbitrary closure and extract the result, you can use
-    /// the `future::lazy` combinator to defer work to executing on `&self`.
-    ///
-    /// Note that if the future `f` panics it will be caught by default and the
-    /// returned future will propagate the panic. That is, panics will not reach
-    /// `&self` and will be propagated to the returned future's `poll` method if
-    /// queried.
-    ///
-    /// If the returned future is dropped then `f` will be canceled, if
-    /// possible. That is, if the computation is in the middle of working, it
-    /// will be interrupted when possible.
-    #[cfg(feature = "use_std")]
-    fn spawn<F>(&self, f: F) -> SpawnHandle<F::Item, F::Error>
-        where F: Future,
-              Self: Spawn<Spawned<F>>
-    {
-        with_std::spawn(self, f)
-    }
-
-    /// Spawns a closure on this `Spawn`
-    ///
-    /// This function is a convenience wrapper around the `spawn` function above
-    /// for running a closure wrapped in `future::lazy`. It will spawn the
-    /// function `f` provided onto the thread pool, and continue to run the
-    /// future returned by `f` on the thread pool as well.
-    #[cfg(feature = "use_std")]
-    fn spawn_fn<F, R>(&self, f: F) -> SpawnHandle<R::Item, R::Error>
-        where F: FnOnce() -> R,
-              R: futures::IntoFuture,
-              Self: Spawn<Spawned<futures::future::Lazy<F, R>>>,
-    {
-        use futures::future;
-        with_std::spawn(self, future::lazy(f))
-    }
 }
 
 #[cfg(feature = "use_std")]
-pub use with_std::{NewThread, SpawnHandle, Spawned};
+pub use with_std::{NewThread, SpawnHandle, Spawned, SpawnHelper};
 
 #[cfg(feature = "use_std")]
 mod with_std {
     use {Spawn};
-    use futures::{Future, Poll, Async};
-    use futures::future::CatchUnwind;
+    use futures::{Future, IntoFuture, Poll, Async};
+    use futures::future::{self, CatchUnwind, Lazy};
     use futures::sync::oneshot;
 
     use std::{thread};
@@ -112,34 +68,77 @@ mod with_std {
     /// in a new thread dedicated to processing the given future to completion.
     pub struct NewThread;
 
-    pub fn spawn<F, S: ?Sized>(s: &S, future: F) -> SpawnHandle<F::Item, F::Error>
-        where F: Future,
-              S: Spawn<Spawned<F>>
-    {
-        use futures::sync::oneshot;
-        use std::panic::AssertUnwindSafe;
-        use std::sync::Arc;
-        use std::sync::atomic::AtomicBool;
+    /// Additional strategies for spawning a future.
+    ///
+    /// These functions have to be on a separate trait vs. on the `Spawn` trait
+    /// in order to make rustc happy.
+    pub trait SpawnHelper {
+        /// Spawns a future to run on this `Spawn`, returning a future representing
+        /// the produced value.
+        ///
+        ///
+        /// This function will return immediately, and schedule the future `f` to
+        /// run on `self`. The details of scheduling and execution are left to the
+        /// implementations of `Spawn`. The returned future serves as a proxy to the
+        /// computation that `F` is running.
+        ///
+        /// To simply run an arbitrary closure and extract the result, you can use
+        /// the `future::lazy` combinator to defer work to executing on `&self`.
+        ///
+        /// Note that if the future `f` panics it will be caught by default and the
+        /// returned future will propagate the panic. That is, panics will not reach
+        /// `&self` and will be propagated to the returned future's `poll` method if
+        /// queried.
+        ///
+        /// If the returned future is dropped then `f` will be canceled, if
+        /// possible. That is, if the computation is in the middle of working, it
+        /// will be interrupted when possible.
+        fn spawn<F>(&self, future: F) -> SpawnHandle<F::Item, F::Error>
+            where F: Future,
+                  Self: Spawn<Spawned<F>>
+        {
+            use futures::sync::oneshot;
+            use std::panic::AssertUnwindSafe;
+            use std::sync::Arc;
+            use std::sync::atomic::AtomicBool;
 
-        let (tx, rx) = oneshot::channel();
-        let keep_running_flag = Arc::new(AtomicBool::new(false));
+            let (tx, rx) = oneshot::channel();
+            let keep_running_flag = Arc::new(AtomicBool::new(false));
 
-        // AssertUnwindSafe is used here becuase `Send + 'static` is basically
-        // an alias for an implementation of the `UnwindSafe` trait but we can't
-        // express that in the standard library right now.
-        let sender = Spawned {
-            future: AssertUnwindSafe(future).catch_unwind(),
-            tx: Some(tx),
-            keep_running_flag: keep_running_flag.clone(),
-        };
+            // AssertUnwindSafe is used here becuase `Send + 'static` is basically
+            // an alias for an implementation of the `UnwindSafe` trait but we can't
+            // express that in the standard library right now.
+            let sender = Spawned {
+                future: AssertUnwindSafe(future).catch_unwind(),
+                tx: Some(tx),
+                keep_running_flag: keep_running_flag.clone(),
+            };
 
-        // Spawn the future
-        s.spawn_detached(sender);
+            // Spawn the future
+            self.spawn_detached(sender);
 
-        SpawnHandle {
-            inner: rx,
-            keep_running_flag: keep_running_flag,
+            SpawnHandle {
+                inner: rx,
+                keep_running_flag: keep_running_flag,
+            }
         }
+
+        /// Spawns a closure on this `Spawn`
+        ///
+        /// This function is a convenience wrapper around the `spawn` function above
+        /// for running a closure wrapped in `future::lazy`. It will spawn the
+        /// function `f` provided onto the thread pool, and continue to run the
+        /// future returned by `f` on the thread pool as well.
+        fn spawn_fn<F, R>(&self, f: F) -> SpawnHandle<R::Item, R::Error>
+            where F: FnOnce() -> R,
+                  R: IntoFuture,
+                  Self: Spawn<Spawned<Lazy<F, R>>>,
+        {
+            self.spawn(future::lazy(f))
+        }
+    }
+
+    impl<T> SpawnHelper for T {
     }
 
     impl<T, E> SpawnHandle<T, E> {
@@ -199,6 +198,14 @@ mod with_std {
                 let _ = future.wait();
             });
         }
+    }
+
+    #[test]
+    fn test_new_thread() {
+        let new_thread = NewThread;
+        let res = new_thread.spawn_fn(|| Ok::<u32, ()>(1));
+
+        assert_eq!(1, res.wait().unwrap());
     }
 }
 
