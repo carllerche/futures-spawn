@@ -10,9 +10,11 @@
 
 #![deny(warnings, missing_docs)]
 
+extern crate core;
 extern crate futures;
 
-use futures::{Future};
+use futures::Future;
+use core::result;
 
 /// Value that can spawn a future
 ///
@@ -25,15 +27,58 @@ pub trait Spawn<T: Future<Item = (), Error = ()>> {
     /// This function will return immediately, and schedule the future `f` to
     /// run on `self`. The details of scheduling and execution are left to the
     /// implementations of `Spawn`.
-    fn spawn_detached(&self, f: T);
+    fn spawn_detached(&self, f: T) -> Result<(), T>;
 }
+
+/// An error returned from the `spawn_detached` function.
+///
+/// A `spawn` operation should only fail if the future executor has shutdown and
+/// is no longer able to schedule new futures or the executor is at capacity.
+#[derive(Debug)]
+pub struct Error<T> {
+    task: T,
+    kind: ErrorKind,
+}
+
+/// The possible reasons for a spawn to fail.
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum ErrorKind {
+    /// The executor is shutdown
+    Shutdown,
+    /// The executor has no more capacity
+    NoCapacity,
+}
+
+/// The return type of a `Spawn::spawn_detached` method, indicating the outcome
+/// of `spawn` attempt.
+pub type Result<T, U> = result::Result<T, Error<U>>;
 
 #[cfg(feature = "use_std")]
 pub use with_std::{NewThread, SpawnHandle, Spawned, SpawnHelper};
 
+impl<T> Error<T> {
+    /// Create a new `Error`
+    pub fn new(kind: ErrorKind, task: T) -> Error<T> {
+        Error {
+            task: task,
+            kind: kind,
+        }
+    }
+
+    /// Returns the associated reason for the error
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
+    }
+
+    /// Consumes self and returns the original task that was spawned.
+    pub fn into_task(self) -> T {
+        self.task
+    }
+}
+
 #[cfg(feature = "use_std")]
 mod with_std {
-    use {Spawn};
+    use Spawn;
     use futures::{Future, IntoFuture, Poll, Async};
     use futures::future::{self, CatchUnwind, Lazy};
     use futures::sync::oneshot;
@@ -51,7 +96,7 @@ mod with_std {
     /// will propagate panics.
     #[must_use]
     pub struct SpawnHandle<T, E> {
-        inner: oneshot::Receiver<thread::Result<Result<T, E>>>,
+        rx: oneshot::Receiver<thread::Result<Result<T, E>>>,
         keep_running_flag: Arc<AtomicBool>,
     }
 
@@ -93,9 +138,9 @@ mod with_std {
         /// If the returned future is dropped then `f` will be canceled, if
         /// possible. That is, if the computation is in the middle of working, it
         /// will be interrupted when possible.
-        fn spawn<F>(&self, future: F) -> SpawnHandle<F::Item, F::Error>
+        fn spawn<F>(&self, future: F) -> super::Result<SpawnHandle<F::Item, F::Error>, F>
             where F: Future,
-                  Self: Spawn<Spawned<F>>
+                  Self: Spawn<Spawned<F>>,
         {
             use futures::sync::oneshot;
             use std::panic::AssertUnwindSafe;
@@ -115,12 +160,23 @@ mod with_std {
             };
 
             // Spawn the future
-            self.spawn_detached(sender);
+            try!(self.spawn_detached(sender).or_else(|e| {
+                // TODO: Try to unbox the task
+                drop(e);
+                Ok(())
+                /*
+                let kind = e.kind();
+                let task = e.into_task();
 
-            SpawnHandle {
-                inner: rx,
+                unimplemented!();
+                // super::Error::new(kind, task.future.into_inner())
+                */
+            }));
+
+            Ok(SpawnHandle {
+                rx: rx,
                 keep_running_flag: keep_running_flag,
-            }
+            })
         }
 
         /// Spawns a closure on this `Spawn`
@@ -129,12 +185,17 @@ mod with_std {
         /// for running a closure wrapped in `future::lazy`. It will spawn the
         /// function `f` provided onto the thread pool, and continue to run the
         /// future returned by `f` on the thread pool as well.
-        fn spawn_fn<F, R>(&self, f: F) -> SpawnHandle<R::Item, R::Error>
+        fn spawn_fn<F, R>(&self, f: F) -> super::Result<SpawnHandle<R::Item, R::Error>, F>
             where F: FnOnce() -> R,
                   R: IntoFuture,
                   Self: Spawn<Spawned<Lazy<F, R>>>,
         {
             self.spawn(future::lazy(f))
+                .map_err(|e| {
+                    // TODO: Try to unbox the error
+                    drop(e);
+                    unreachable!();
+                })
         }
     }
 
@@ -157,7 +218,7 @@ mod with_std {
         type Error = E;
 
         fn poll(&mut self) -> Poll<T, E> {
-            match self.inner.poll().expect("shouldn't be canceled") {
+            match self.rx.poll().expect("shouldn't be canceled") {
                 Async::Ready(Ok(Ok(e))) => Ok(e.into()),
                 Async::Ready(Ok(Err(e))) => Err(e),
                 Async::Ready(Err(e)) => panic::resume_unwind(e),
@@ -191,12 +252,14 @@ mod with_std {
     }
 
     impl<T: Future<Item = (), Error = ()> + Send + 'static> Spawn<T> for NewThread {
-        fn spawn_detached(&self, future: T) {
+        fn spawn_detached(&self, future: T) -> super::Result<(), T> {
             use std::thread;
 
             thread::spawn(move || {
                 let _ = future.wait();
             });
+
+            Ok(())
         }
     }
 
@@ -213,25 +276,27 @@ mod with_std {
 mod tokio {
     extern crate tokio_core;
 
-    use {Spawn};
+    use Spawn;
     use futures::Future;
     use self::tokio_core::reactor::{Core, Handle, Remote};
 
     impl<T: Future<Item = (), Error = ()> + 'static> Spawn<T> for Handle {
-        fn spawn_detached(&self, future: T) {
+        fn spawn_detached(&self, future: T) -> super::Result<(), T> {
             Handle::spawn(self, future);
+            Ok(())
         }
     }
 
     impl<T: Future<Item = (), Error = ()> + 'static> Spawn<T> for Core {
-        fn spawn_detached(&self, future: T) {
-            self.handle().spawn_detached(future);
+        fn spawn_detached(&self, future: T) -> super::Result<(), T> {
+            self.handle().spawn_detached(future)
         }
     }
 
     impl<T: Future<Item = (), Error = ()> + Send + 'static> Spawn<T> for Remote {
-        fn spawn_detached(&self, future: T) {
+        fn spawn_detached(&self, future: T) -> super::Result<(), T> {
             Remote::spawn(self, move |_| future);
+            Ok(())
         }
     }
 }
