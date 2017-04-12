@@ -222,7 +222,9 @@ mod with_std {
                 Async::Ready(Ok(Ok(e))) => Ok(e.into()),
                 Async::Ready(Ok(Err(e))) => Err(e),
                 Async::Ready(Err(e)) => panic::resume_unwind(e),
-                Async::NotReady => Ok(Async::NotReady),
+                Async::NotReady => {
+                    Ok(Async::NotReady)
+                }
             }
         }
     }
@@ -241,11 +243,13 @@ mod with_std {
 
             let res = match self.future.poll() {
                 Ok(Async::Ready(e)) => Ok(e),
-                Ok(Async::NotReady) => return Ok(Async::NotReady),
+                Ok(Async::NotReady) => {
+                    return Ok(Async::NotReady);
+                }
                 Err(e) => Err(e),
             };
 
-            self.tx.take().unwrap().complete(res);
+            let _ = self.tx.take().unwrap().send(res);
 
             Ok(Async::Ready(()))
         }
